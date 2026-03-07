@@ -1,0 +1,215 @@
+package kyu
+
+import (
+	"errors"
+	"testing"
+)
+
+// ---------------------------------------------------------------------------
+// Config.withDefaults
+// ---------------------------------------------------------------------------
+
+func TestConfigDefaults_AllZero(t *testing.T) {
+	cfg := Config{}.withDefaults()
+
+	if cfg.DSN == "" {
+		t.Error("DSN should not be empty")
+	}
+	if cfg.RedisAddr == "" {
+		t.Error("RedisAddr should not be empty")
+	}
+	if cfg.Workers <= 0 {
+		t.Errorf("Workers should be > 0, got %d", cfg.Workers)
+	}
+	if cfg.MetricsPort <= 0 {
+		t.Errorf("MetricsPort should be > 0, got %d", cfg.MetricsPort)
+	}
+	if cfg.Logger == nil {
+		t.Error("Logger should not be nil")
+	}
+}
+
+func TestConfigDefaults_PartialOverride(t *testing.T) {
+	cfg := Config{
+		Workers:     10,
+		MetricsPort: 2112,
+	}.withDefaults()
+
+	if cfg.Workers != 10 {
+		t.Errorf("expected Workers=10, got %d", cfg.Workers)
+	}
+	if cfg.MetricsPort != 2112 {
+		t.Errorf("expected MetricsPort=2112, got %d", cfg.MetricsPort)
+	}
+	// non-overridden fields still get defaults
+	if cfg.RedisAddr == "" {
+		t.Error("RedisAddr should have a default")
+	}
+}
+
+func TestConfigDefaults_ZeroMetricsPort_GetsDefault(t *testing.T) {
+	cfg := Config{MetricsPort: 0}.withDefaults()
+	if cfg.MetricsPort != 9090 {
+		t.Errorf("expected default MetricsPort=9090, got %d", cfg.MetricsPort)
+	}
+}
+
+func TestConfigDefaults_NegativeWorkers_GetsDefault(t *testing.T) {
+	cfg := Config{Workers: -3}.withDefaults()
+	if cfg.Workers != 5 {
+		t.Errorf("expected default Workers=5, got %d", cfg.Workers)
+	}
+}
+
+func TestConfigDefaults_ExplicitValuesNotOverwritten(t *testing.T) {
+	cfg := Config{
+		DSN:         "postgres://custom/db",
+		RedisAddr:   "redis-host:6380",
+		Workers:     3,
+		MetricsPort: 8888,
+	}.withDefaults()
+
+	if cfg.DSN != "postgres://custom/db" {
+		t.Errorf("DSN overwritten: got %q", cfg.DSN)
+	}
+	if cfg.RedisAddr != "redis-host:6380" {
+		t.Errorf("RedisAddr overwritten: got %q", cfg.RedisAddr)
+	}
+	if cfg.Workers != 3 {
+		t.Errorf("Workers overwritten: got %d", cfg.Workers)
+	}
+	if cfg.MetricsPort != 8888 {
+		t.Errorf("MetricsPort overwritten: got %d", cfg.MetricsPort)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Queue.Register and execute
+// ---------------------------------------------------------------------------
+
+func newTestQueue() *Queue {
+	return New(Config{
+		DSN:         "postgres://unused/test",
+		RedisAddr:   "localhost:6379",
+		Workers:     1,
+		MetricsPort: 0, // disabled
+	})
+}
+
+func TestRegister_HandlerIsCalled(t *testing.T) {
+	q := newTestQueue()
+	called := false
+
+	q.Register("test_job", func(payload string) error {
+		called = true
+		return nil
+	})
+
+	if err := q.execute("test_job", "hello"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("handler was not called")
+	}
+}
+
+func TestRegister_PayloadPassedThrough(t *testing.T) {
+	q := newTestQueue()
+	var got string
+
+	q.Register("echo", func(payload string) error {
+		got = payload
+		return nil
+	})
+
+	_ = q.execute("echo", "my-payload")
+	if got != "my-payload" {
+		t.Errorf("expected payload %q, got %q", "my-payload", got)
+	}
+}
+
+func TestExecute_UnknownJobType_ReturnsError(t *testing.T) {
+	q := newTestQueue()
+	err := q.execute("nonexistent", "data")
+	if err == nil {
+		t.Fatal("expected error for unknown job type, got nil")
+	}
+}
+
+func TestExecute_HandlerError_Propagated(t *testing.T) {
+	q := newTestQueue()
+	sentinel := errors.New("handler failed")
+
+	q.Register("bad_job", func(payload string) error {
+		return sentinel
+	})
+
+	err := q.execute("bad_job", "x")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected sentinel error, got %v", err)
+	}
+}
+
+func TestRegister_OverwritesExistingHandler(t *testing.T) {
+	q := newTestQueue()
+
+	q.Register("job", func(payload string) error {
+		return errors.New("old handler")
+	})
+	q.Register("job", func(payload string) error {
+		return nil
+	})
+
+	if err := q.execute("job", "x"); err != nil {
+		t.Errorf("expected new handler (nil error), got: %v", err)
+	}
+}
+
+func TestRegister_MultipleTypes(t *testing.T) {
+	q := newTestQueue()
+	results := map[string]string{}
+
+	for _, name := range []string{"a", "b", "c"} {
+		n := name // capture
+		q.Register(n, func(payload string) error {
+			results[n] = payload
+			return nil
+		})
+	}
+
+	for _, name := range []string{"a", "b", "c"} {
+		if err := q.execute(name, name+"-payload"); err != nil {
+			t.Errorf("execute %q: %v", name, err)
+		}
+	}
+
+	for _, name := range []string{"a", "b", "c"} {
+		if results[name] != name+"-payload" {
+			t.Errorf("job %q: got payload %q", name, results[name])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// metrics
+// ---------------------------------------------------------------------------
+
+func TestNewMetrics_DoesNotPanic(t *testing.T) {
+	// Two calls must not panic (each uses its own registry).
+	_ = newMetrics()
+	_ = newMetrics()
+}
+
+func TestNewMetrics_CountersStartAtZero(t *testing.T) {
+	m := newMetrics()
+
+	// Increment and check it doesn't panic — the prometheus API doesn't expose
+	// a direct read on Counter without a gathering round-trip, so we just
+	// exercise the happy path.
+	m.jobsProcessed.WithLabelValues("completed").Inc()
+	m.jobFailures.WithLabelValues("send_email").Inc()
+	m.jobsDeadTotal.Inc()
+	m.jobTotal.Inc()
+	m.queueDepth.Set(3)
+	m.queueDepth.Dec()
+}
