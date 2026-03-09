@@ -8,8 +8,11 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 // Config holds all tunable parameters for a Queue.
@@ -35,6 +38,22 @@ type Config struct {
 	// Logger is used for internal diagnostic messages.
 	// Defaults to the standard library logger when nil.
 	Logger *log.Logger
+	// StaleJobTimeout is the duration after which a running job is considered stale
+	// and can be retried by another worker. Default: 5 minutes.
+	StaleJobTimeout time.Duration
+}
+
+type EnqueueOptions struct {
+	// Priority is the job priority. Higher values indicate higher priority.
+	// Jobs with higher priority are processed before lower priority jobs.
+	// Default: 0
+	Priority int
+	// MaxRetries is the maximum number of times to retry a failed job.
+	// Default: 0 (no retries)
+	MaxRetries int
+	// ScheduledAt is the time at which the job should be executed.
+	// If nil or in the past, the job is enqueued immediately.
+	ScheduledAt *time.Time
 }
 
 func (c Config) withDefaults() Config {
@@ -86,15 +105,7 @@ func (q *Queue) Register(jobType string, handler func(payload string) error) {
 	q.registry[jobType] = handler
 	q.mu.Unlock()
 }
-
-// Start opens database and Redis connections, runs auto-migration, then
-// launches the worker pool, scheduler, and (optionally) the metrics HTTP server
-// as goroutines.
-//
-// Start blocks until the provided context is cancelled, at which point it
-// performs a graceful shutdown and returns any accumulated error. If multiple
-// subsystems fail, only the first error is returned.
-func (q *Queue) Start(ctx context.Context) error {
+func (q *Queue) Connect(ctx context.Context) error {
 	// --- Postgres ---
 	pgDB, err := connectDB(q.cfg.DSN)
 	if err != nil {
@@ -112,9 +123,19 @@ func (q *Queue) Start(ctx context.Context) error {
 		return fmt.Errorf("kyu: redis: %w", err)
 	}
 	q.rdb = redisClient
-
 	// --- Metrics ---
 	q.met = newMetrics()
+	return nil
+}
+
+// Start opens database and Redis connections, runs auto-migration, then
+// launches the worker pool, scheduler, stale reaper, and (optionally) the metrics HTTP server
+// as goroutines.
+//
+// Start blocks until the provided context is cancelled, at which point it
+// performs a graceful shutdown and returns any accumulated error. If multiple
+// subsystems fail, only the first error is returned.
+func (q *Queue) Start(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 3)
@@ -143,7 +164,11 @@ func (q *Queue) Start(ctx context.Context) error {
 		defer wg.Done()
 		q.runScheduler(ctx)
 	}()
-
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		q.staleReaper(ctx)
+	}()
 	// Wait for context cancellation, then drain
 	<-ctx.Done()
 	wg.Wait()
@@ -182,4 +207,63 @@ func (q *Queue) runMetricsServer(ctx context.Context, port int) error {
 	case err := <-srvErr:
 		return err
 	}
+}
+
+func (q *Queue) Inspect(ctx context.Context, id string) (job, error) {
+	var j job
+	if err := q.db.conn.First(&j, "id = ?", id).Error; err != nil {
+		return job{}, fmt.Errorf("kyu: get job: %w", err)
+	}
+	return j, nil
+}
+func (q *Queue) DeadJobs(ctx context.Context) ([]job, error) {
+	var jobs []job
+	if err := q.db.conn.Where("status = ?", "dead").Find(&jobs).Error; err != nil {
+		q.cfg.Logger.Printf("kyu: get dead jobs: %v", err)
+		return nil, err
+	}
+	return jobs, nil
+}
+func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts EnqueueOptions) (string, error) {
+	j := job{
+		ID:          uuid.New().String(),
+		JobType:     jobType,
+		Payload:     payload,
+		ScheduledAt: opts.ScheduledAt,
+		MaxRetries:  opts.MaxRetries,
+		Priority:    opts.Priority,
+
+		Status: "pending",
+	}
+
+	if err := q.db.conn.Create(&j).Error; err != nil {
+		return "", fmt.Errorf("kyu: insert job: %w", err)
+	}
+
+	if opts.ScheduledAt == nil || opts.ScheduledAt.Before(time.Now()) {
+		if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+			Score:  float64(j.Priority),
+			Member: j.ID,
+		}).Err(); err != nil {
+			return "", fmt.Errorf("kyu: enqueue job: %w", err)
+		}
+	}
+
+	q.met.jobTotal.Inc()
+	return j.ID, nil
+}
+func (q *Queue) RunOnce(ctx context.Context) error {
+	if q.db == nil || q.rdb == nil {
+		return fmt.Errorf("kyu: call Connect() before RunOnce()")
+	}
+	var wg sync.WaitGroup
+	for w := 1; w < q.cfg.Workers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			q.runOnce(ctx, id)
+		}(w)
+	}
+	wg.Wait()
+	return nil
 }

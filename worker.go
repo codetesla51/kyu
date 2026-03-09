@@ -3,6 +3,7 @@ package kyu
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -12,7 +13,12 @@ import (
 const pendingQueue = "jobs:pending"
 
 // execute looks up and runs the handler registered for jobType.
-func (q *Queue) execute(jobType, payload string) error {
+func (q *Queue) execute(jobType, payload string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handler panicked: %v", r)
+		}
+	}()
 	q.mu.RLock()
 	handler, ok := q.registry[jobType]
 	q.mu.RUnlock()
@@ -42,22 +48,17 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 		if ctx.Err() != nil {
 			return
 		}
-		// ZPopMin is non-blocking. If the queue is empty we sleep briefly
-		// and loop, which also gives us a clean shutdown check on every tick.
-		results, err := q.rdb.client.ZPopMin(ctx, pendingQueue).Result()
+		result, err := q.rdb.client.BZPopMin(ctx, 2*time.Second, pendingQueue).Result()
 		if err != nil {
+			if err.Error() == "redis:nil" {
+				continue // queue empty, loop back
+			}
 			if ctx.Err() != nil {
 				return
 			}
 			q.cfg.Logger.Printf("kyu: worker %d: redis error: %v", workerID, err)
-			time.Sleep(time.Second)
 			continue
 		}
-		if len(results) == 0 {
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		result := results[0]
 
 		jobID, _ := result.Member.(string)
 		var j job
@@ -77,9 +78,12 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 
 		if execErr != nil {
 			if j.RetryCount < j.MaxRetries {
+				delay := time.Duration(math.Pow(2, float64(j.RetryCount))) * time.Second
+				schedule_fail_at := time.Now().Add(delay)
 				q.db.conn.Model(&j).Updates(map[string]any{
 					"status":        "failed",
 					"retry_count":   j.RetryCount + 1,
+					"scheduled_at":  schedule_fail_at,
 					"error_message": execErr.Error(),
 				})
 				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
@@ -134,6 +138,112 @@ func (q *Queue) runScheduler(ctx context.Context) {
 					q.cfg.Logger.Printf("kyu: scheduler: queue job %s: %v", j.ID, err)
 				}
 			}
+		}
+	}
+}
+func (q *Queue) staleReaper(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			timeout := q.cfg.StaleJobTimeout * time.Minute
+			if timeout == 0 {
+				timeout = 10 * time.Minute
+			}
+			cutoff := time.Now().Add(-timeout)
+			var jobs []job
+			err := q.db.conn.Where("status = ? AND locked_at <= ?", "running", cutoff).Find(&jobs).Error
+			if err != nil {
+				q.cfg.Logger.Printf("kyu: stale reaper: fetch stale jobs: %v", err)
+				continue
+			}
+			for _, j := range jobs {
+				q.db.conn.Model(&j).Updates(map[string]any{
+					"status":    "pending",
+					"locked_at": nil,
+					"locked_by": "",
+				})
+				q.cfg.Logger.Printf("kyu: stale reaper: re-queued stale job %s", j.ID)
+			}
+		}
+	}
+}
+
+func (q *Queue) runOnce(ctx context.Context, workerID int) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		result, err := q.rdb.client.ZPopMin(ctx, pendingQueue, 1).Result()
+
+		if err != nil {
+
+			if ctx.Err() != nil {
+				return
+			}
+			q.cfg.Logger.Printf("kyu: worker %d: redis error: %v", workerID, err)
+			continue
+		}
+		if len(result) == 0 {
+			return
+		}
+
+		jobID, _ := result[0].Member.(string)
+		var j job
+		if err := q.db.conn.First(&j, "id = ?", jobID).Error; err != nil {
+			q.cfg.Logger.Printf("kyu: worker %d: job %s not found: %v", workerID, jobID, err)
+			continue
+		}
+		if j.ScheduledAt != nil && j.ScheduledAt.After(time.Now()) {
+			q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+				Score:  float64(j.Priority),
+				Member: j.ID,
+			})
+			continue
+		}
+		now := time.Now()
+		q.db.conn.Model(&j).Updates(job{
+			Status:   "running",
+			LockedAt: &now,
+			LockedBy: fmt.Sprintf("worker-%d", workerID),
+		})
+
+		execErr := q.execute(j.JobType, j.Payload)
+
+		if execErr != nil {
+			if j.RetryCount < j.MaxRetries {
+				delay := time.Duration(math.Pow(2, float64(j.RetryCount))) * time.Second
+				schedule_fail_at := time.Now().Add(delay)
+				q.db.conn.Model(&j).Updates(map[string]any{
+					"status":        "failed",
+					"retry_count":   j.RetryCount + 1,
+					"scheduled_at":  schedule_fail_at,
+					"error_message": execErr.Error(),
+				})
+				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+					Score:  float64(j.Priority),
+					Member: j.ID,
+				}).Err(); err != nil {
+					q.cfg.Logger.Printf("kyu: worker %d: re-queue job %s: %v", workerID, j.ID, err)
+				}
+				q.met.jobFailures.WithLabelValues(j.JobType).Inc()
+			} else {
+				q.db.conn.Model(&j).Updates(map[string]any{
+					"status":        "dead",
+					"error_message": fmt.Sprintf("job failed after %d retries: %v", j.RetryCount, execErr),
+				})
+				q.met.jobsDeadTotal.Inc()
+			}
+		} else {
+			completed := time.Now()
+			q.db.conn.Model(&j).Updates(map[string]any{
+				"status":       "completed",
+				"completed_at": completed,
+			})
+			q.met.jobsProcessed.WithLabelValues("completed").Inc()
 		}
 	}
 }
