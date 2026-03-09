@@ -50,7 +50,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 		}
 		result, err := q.rdb.client.BZPopMin(ctx, 2*time.Second, pendingQueue).Result()
 		if err != nil {
-			if err.Error() == "redis:nil" {
+			if err.Error() == "redis: nil" {
 				continue // queue empty, loop back
 			}
 			if ctx.Err() != nil {
@@ -124,12 +124,20 @@ func (q *Queue) runScheduler(ctx context.Context) {
 		case <-ticker.C:
 			var jobs []job
 			err := q.db.conn.
-				Where("status = ? AND scheduled_at <= ?", "pending", time.Now()).
+				Where("status = ? AND scheduled_at <= ?", "scheduled", time.Now()).
 				Find(&jobs).Error
 			if err != nil {
 				q.cfg.Logger.Printf("kyu: scheduler: fetch scheduled jobs: %v", err)
 				continue
 			}
+			err = q.db.conn.
+				Where("status = ? AND scheduled_at <= ?", "failed", time.Now()).
+				Find(&jobs).Error
+			if err != nil {
+				q.cfg.Logger.Printf("kyu: scheduler: fetch scheduled jobs: %v", err)
+				continue
+			}
+
 			for _, j := range jobs {
 				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
 					Score:  float64(j.Priority),

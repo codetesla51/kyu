@@ -14,7 +14,7 @@ import (
 
 func main() {
 	q := kyu.New(kyu.Config{
-		DSN:             envOr("DATABASE_URL", "postgres://user:pass@localhost:5432/kyu?sslmode=disable"),
+		DSN:             envOr("DATABASE_URL", "postgres://localhost:5432/kyu?sslmode=disable"),
 		RedisAddr:       envOr("REDIS_ADDR", "localhost:6379"),
 		Workers:         5,
 		MetricsPort:     9090,
@@ -51,11 +51,11 @@ func main() {
 			Priority:    0,
 			ScheduledAt: &scheduledAt,
 		})
-		jobs, err := q.Inspect(ctx, "e5961dc9-9959-4d2f-97ac-73e06ab0e4f5")
-		if err != nil {
-			return
-		}
-		fmt.Println(jobs)
+		// jobs, err := q.Inspect(ctx, "e5961dc9-9959-4d2f-97ac-73e06ab0e4f5")
+		// if err != nil {
+		// 	return
+		// }
+		//	fmt.Println(jobs)
 		deadJobs, err := q.DeadJobs(ctx)
 		if err != nil {
 			log.Printf("failed to get dead jobs: %v", err)
