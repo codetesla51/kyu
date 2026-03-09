@@ -14,7 +14,7 @@ import (
 
 func main() {
 	q := kyu.New(kyu.Config{
-		DSN:             envOr("DATABASE_URL", "postgres://postgres:password@localhost:5432/kyu?sslmode=disable"),
+		DSN:             envOr("DATABASE_URL", "postgres://user:pass@localhost:5432/kyu?sslmode=disable"),
 		RedisAddr:       envOr("REDIS_ADDR", "localhost:6379"),
 		Workers:         5,
 		MetricsPort:     9090,

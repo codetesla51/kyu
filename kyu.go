@@ -19,7 +19,7 @@ import (
 // Zero-value fields fall back to sensible defaults applied by New.
 type Config struct {
 	// DSN is the PostgreSQL connection string.
-	// Default: "postgres://user:password@localhost:5432/kyu?sslmode=disable"
+	// No default; must be provided.
 	DSN string
 
 	// RedisAddr is the Redis host:port address.
@@ -59,7 +59,7 @@ type EnqueueOptions struct {
 func (c Config) withDefaults() Config {
 	out := c
 	if out.DSN == "" {
-		out.DSN = "postgres://user:password@localhost:5432/kyu?sslmode=disable"
+		out.DSN = "postgres://localhost:5432/kyu?sslmode=disable"
 	}
 	if out.RedisAddr == "" {
 		out.RedisAddr = "localhost:6379"
@@ -232,8 +232,12 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 		ScheduledAt: opts.ScheduledAt,
 		MaxRetries:  opts.MaxRetries,
 		Priority:    opts.Priority,
-
-		Status: "pending",
+		Status:      "pending",
+	}
+	if opts.ScheduledAt != nil {
+		j = job{
+			Status: "scheduled",
+		}
 	}
 
 	if err := q.db.conn.Create(&j).Error; err != nil {
