@@ -11,15 +11,14 @@ RUN go mod download
 COPY . .
 
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/server .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /app/server ./cmd/example
 
 FROM alpine:3.19
 
-
 WORKDIR /app
 
-# Copy binary from builder
 COPY --from=builder /app/server .
+RUN chmod +x /app/server
 
 EXPOSE 8080
 

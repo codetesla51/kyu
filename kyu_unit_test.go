@@ -1,8 +1,10 @@
 package kyu
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,12 +102,12 @@ func TestRegister_HandlerIsCalled(t *testing.T) {
 	q := newTestQueue()
 	called := false
 
-	q.Register("test_job", func(payload string) error {
+	q.Register("test_job", func(ctx context.Context, payload string) error {
 		called = true
 		return nil
 	})
 
-	if err := q.execute("test_job", "hello"); err != nil {
+	if err := q.execute(context.Background(), "test_job", "hello", time.Second); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -117,12 +119,12 @@ func TestRegister_PayloadPassedThrough(t *testing.T) {
 	q := newTestQueue()
 	var got string
 
-	q.Register("echo", func(payload string) error {
+	q.Register("echo", func(ctx context.Context, payload string) error {
 		got = payload
 		return nil
 	})
 
-	_ = q.execute("echo", "my-payload")
+	_ = q.execute(context.Background(), "echo", "my-payload", time.Second)
 	if got != "my-payload" {
 		t.Errorf("expected payload %q, got %q", "my-payload", got)
 	}
@@ -130,7 +132,7 @@ func TestRegister_PayloadPassedThrough(t *testing.T) {
 
 func TestExecute_UnknownJobType_ReturnsError(t *testing.T) {
 	q := newTestQueue()
-	err := q.execute("nonexistent", "data")
+	err := q.execute(context.Background(), "nonexistent", "data", time.Second)
 	if err == nil {
 		t.Fatal("expected error for unknown job type, got nil")
 	}
@@ -140,11 +142,11 @@ func TestExecute_HandlerError_Propagated(t *testing.T) {
 	q := newTestQueue()
 	sentinel := errors.New("handler failed")
 
-	q.Register("bad_job", func(payload string) error {
+	q.Register("bad_job", func(ctx context.Context, payload string) error {
 		return sentinel
 	})
 
-	err := q.execute("bad_job", "x")
+	err := q.execute(context.Background(), "bad_job", "x", time.Second)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got %v", err)
 	}
@@ -153,14 +155,14 @@ func TestExecute_HandlerError_Propagated(t *testing.T) {
 func TestRegister_OverwritesExistingHandler(t *testing.T) {
 	q := newTestQueue()
 
-	q.Register("job", func(payload string) error {
+	q.Register("job", func(ctx context.Context, payload string) error {
 		return errors.New("old handler")
 	})
-	q.Register("job", func(payload string) error {
+	q.Register("job", func(ctx context.Context, payload string) error {
 		return nil
 	})
 
-	if err := q.execute("job", "x"); err != nil {
+	if err := q.execute(context.Background(), "job", "x", time.Second); err != nil {
 		t.Errorf("expected new handler (nil error), got: %v", err)
 	}
 }
@@ -171,14 +173,14 @@ func TestRegister_MultipleTypes(t *testing.T) {
 
 	for _, name := range []string{"a", "b", "c"} {
 		n := name // capture
-		q.Register(n, func(payload string) error {
+		q.Register(n, func(ctx context.Context, payload string) error {
 			results[n] = payload
 			return nil
 		})
 	}
 
 	for _, name := range []string{"a", "b", "c"} {
-		if err := q.execute(name, name+"-payload"); err != nil {
+		if err := q.execute(context.Background(), name, name+"-payload", time.Second); err != nil {
 			t.Errorf("execute %q: %v", name, err)
 		}
 	}
@@ -212,4 +214,29 @@ func TestNewMetrics_CountersStartAtZero(t *testing.T) {
 	m.jobTotal.Inc()
 	m.queueDepth.Set(3)
 	m.queueDepth.Dec()
+}
+
+func TestExecute_Timeout(t *testing.T) {
+	q := newTestQueue()
+	q.Register("slow_job", func(ctx context.Context, payload string) error {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	ctx := context.Background()
+	err := q.execute(ctx, "slow_job", "", 100*time.Millisecond)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+}
+
+func TestRunOnce_RequiresConnect(t *testing.T) {
+	q := newTestQueue()
+	err := q.RunOnce(context.Background())
+	if err == nil {
+		t.Error("expected error when not connected")
+	}
 }

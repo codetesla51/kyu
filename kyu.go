@@ -54,6 +54,7 @@ type EnqueueOptions struct {
 	// ScheduledAt is the time at which the job should be executed.
 	// If nil or in the past, the job is enqueued immediately.
 	ScheduledAt *time.Time
+	TimeOut     time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -80,7 +81,7 @@ func (c Config) withDefaults() Config {
 // Create one with New, register handlers with Register, then call Start.
 type Queue struct {
 	cfg      Config
-	registry map[string]func(string) error
+	registry map[string]func(context.Context, string) error
 	mu       sync.RWMutex // protects registry
 
 	db  *db
@@ -94,13 +95,13 @@ type Queue struct {
 func New(cfg Config) *Queue {
 	return &Queue{
 		cfg:      cfg.withDefaults(),
-		registry: make(map[string]func(string) error),
+		registry: make(map[string]func(context.Context, string) error),
 	}
 }
 
 // Register associates a handler function with a named job type.
 // Register is safe to call concurrently and may be called before or after Start.
-func (q *Queue) Register(jobType string, handler func(payload string) error) {
+func (q *Queue) Register(jobType string, handler func(ctx context.Context, payload string) error) {
 	q.mu.Lock()
 	q.registry[jobType] = handler
 	q.mu.Unlock()
@@ -235,9 +236,7 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 		Status:      "pending",
 	}
 	if opts.ScheduledAt != nil {
-		j = job{
-			Status: "scheduled",
-		}
+		j.Status = "scheduled"
 	}
 
 	if err := q.db.conn.Create(&j).Error; err != nil {

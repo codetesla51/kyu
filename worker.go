@@ -13,19 +13,24 @@ import (
 const pendingQueue = "jobs:pending"
 
 // execute looks up and runs the handler registered for jobType.
-func (q *Queue) execute(jobType, payload string) (err error) {
+func (q *Queue) execute(ctx context.Context, jobType, payload string, timeout time.Duration) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("handler panicked: %v", r)
 		}
 	}()
+	if timeout > 0 {
+		var cancle context.CancelFunc
+		ctx, cancle = context.WithTimeout(ctx, timeout)
+		defer cancle()
+	}
 	q.mu.RLock()
 	handler, ok := q.registry[jobType]
 	q.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("unknown job type: %s", jobType)
 	}
-	return handler(payload)
+	return handler(ctx, payload)
 }
 
 // runWorkerPool spawns numWorkers goroutines and waits for them all to exit
@@ -74,7 +79,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 			LockedBy: fmt.Sprintf("worker-%d", workerID),
 		})
 
-		execErr := q.execute(j.JobType, j.Payload)
+		execErr := q.execute(ctx, j.JobType, j.Payload, 30*time.Second)
 
 		if execErr != nil {
 			if j.RetryCount < j.MaxRetries {
@@ -219,7 +224,7 @@ func (q *Queue) runOnce(ctx context.Context, workerID int) {
 			LockedBy: fmt.Sprintf("worker-%d", workerID),
 		})
 
-		execErr := q.execute(j.JobType, j.Payload)
+		execErr := q.execute(ctx, j.JobType, j.Payload, 30*time.Second)
 
 		if execErr != nil {
 			if j.RetryCount < j.MaxRetries {

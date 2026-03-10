@@ -7,7 +7,7 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgresql://postgres:2005code@db:5432/jobscheduler?sslmode=disable
-      - REDIS_URL=redis://redis:6379
+      - REDIS_ADDR=redis:6379
     depends_on:
       db:
         condition: service_healthy

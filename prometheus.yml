@@ -4,4 +4,4 @@ global:
 scrape_configs:
   - job_name: "kyu"
     static_configs:
-      - targets: ["app:8080"]
+      - targets: ["app:9090"]
