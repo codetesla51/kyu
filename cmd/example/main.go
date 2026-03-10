@@ -14,49 +14,19 @@ import (
 
 func main() {
 	q := kyu.New(kyu.Config{
-		DSN:             envOr("DATABASE_URL", "postgres://postgres:2005code@localhost:5432/jobscheduler?sslmode=disable"),
-		RedisAddr:       envOr("REDIS_ADDR", "localhost:6380"),
-		Workers:         2,
+		DSN:             envOr("DATABASE_URL", "postgres://localhost:5432/kyu?sslmode=disable"),
+		RedisAddr:       envOr("REDIS_ADDR", "localhost:6379"),
+		Workers:         5,
 		MetricsPort:     9090,
 		StaleJobTimeout: 1,
 		Logger:          log.Default(),
 	})
 
-	// Register handlers BEFORE connect/start
-	q.Register("test_job", func(ctx context.Context, payload string) error {
-		log.Printf("test_job: processed payload=%q", payload)
+	q.Register("send_email", func(ctx context.Context, payload string) error {
+		log.Printf("send_email: processing payload=%q", payload)
+		time.Sleep(2 * time.Second)
 		return nil
 	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// Connect first
-	if err := q.Connect(ctx); err != nil {
-		log.Fatalf("connect failed: %v", err)
-	}
-
-	// Then enqueue
-	jobID, err := q.Enqueue(ctx, "test_job", "hello-world", kyu.EnqueueOptions{
-		MaxRetries: 0,
-	})
-	if err != nil {
-		log.Fatalf("enqueue failed: %v", err)
-	}
-	log.Printf("enqueued job: %s", jobID)
-
-	// Then start workers
-	go func() {
-		if err := q.Start(ctx); err != nil {
-			log.Printf("start error: %v", err)
-		}
-	}()
-
-	time.Sleep(5 * time.Second)
-	log.Println("done")
-}
-
-func envOr(key, fallback string) string {
 
 	q.Register("failing_job", func(ctx context.Context, payload string) error {
 		return fmt.Errorf("something went wrong processing: %s", payload)
@@ -98,8 +68,8 @@ func envOr(key, fallback string) string {
 		log.Printf("logging middleware")
 		err := next()
 		if err != nil {
-			log.Printf("Job failed : %s", jobtype)
-			return err
+			log.Printf("Job failed ")
+			return nil
 		}
 		return err
 	})
@@ -183,22 +153,6 @@ func envOr(key, fallback string) string {
 			ScheduledAt: &scheduledAt,
 			TimeOut:     1 * time.Second,
 		})
-
-		// Cancel job test - use generate_report which takes 3 seconds
-		cancelJobID, _ := q.Enqueue(ctx, "generate_report", `{"report_id": 999}`, kyu.EnqueueOptions{
-			MaxRetries: 2,
-			Priority:   0,
-		})
-		log.Printf("Enqueued job to cancel: %s", cancelJobID)
-
-		time.Sleep(500 * time.Millisecond) // wait a bit before cancelling
-
-		err := q.CancelJob(ctx, cancelJobID)
-		if err != nil {
-			log.Printf("CancelJob error: %v", err)
-		} else {
-			log.Printf("Successfully cancelled job: %s", cancelJobID)
-		}
 
 		time.Sleep(15 * time.Second)
 
