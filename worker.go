@@ -74,6 +74,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 		}
 
 		jobID, _ := result.Member.(string)
+
 		var j job
 		if err := q.db.conn.First(&j, "id = ?", jobID).Error; err != nil {
 			q.cfg.Logger.Printf("kyu: worker %d: job %s not found: %v", workerID, jobID, err)
@@ -163,7 +164,7 @@ func (q *Queue) staleReaper(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			timeout := q.cfg.StaleJobTimeout * time.Minute
+			timeout := q.cfg.StaleJobTimeout
 			if timeout == 0 {
 				timeout = 10 * time.Minute
 			}

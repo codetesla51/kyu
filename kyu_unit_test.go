@@ -339,3 +339,45 @@ func TestIntegration_MiddlewareCalled(t *testing.T) {
 		t.Error("handler was not called")
 	}
 }
+func BenchmarkRegister(b *testing.B) {
+	q := newTestQueue()
+	handler := func(ctx context.Context, payload string) error { return nil }
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Register("bench_job", handler)
+	}
+}
+
+func BenchmarkExecute(b *testing.B) {
+	q := newTestQueue()
+	q.Register("bench_job", func(ctx context.Context, payload string) error { return nil })
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.execute(ctx, "bench_job", "payload", time.Second)
+	}
+}
+
+func BenchmarkExecuteWithMiddleware(b *testing.B) {
+	q := newTestQueue()
+	q.Use(func(ctx context.Context, jobtype, payload string, next func() error) error { return next() })
+	q.Use(func(ctx context.Context, jobtype, payload string, next func() error) error { return next() })
+	q.Register("bench_job", func(ctx context.Context, payload string) error { return nil })
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.execute(ctx, "bench_job", "payload", time.Second)
+	}
+}
+
+func BenchmarkExecuteParallel(b *testing.B) {
+	q := newTestQueue()
+	q.Register("bench_job", func(ctx context.Context, payload string) error { return nil })
+	ctx := context.Background()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			q.execute(ctx, "bench_job", "payload", time.Second)
+		}
+	})
+}

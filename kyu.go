@@ -296,6 +296,8 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 	}
 
 	q.met.jobTotal.Inc()
+	depth, _ := q.rdb.client.ZCard(ctx, q.cfg.QueueName).Result()
+	q.met.queueDepth.Set(float64(depth))
 	return j.ID, nil
 }
 
