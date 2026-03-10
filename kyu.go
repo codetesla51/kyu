@@ -38,9 +38,27 @@ type Config struct {
 	// Logger is used for internal diagnostic messages.
 	// Defaults to the standard library logger when nil.
 	Logger *log.Logger
+
 	// StaleJobTimeout is the duration after which a running job is considered stale
-	// and can be retried by another worker. Default: 5 minutes.
+	// and can be retried by another worker.
+	// Default: 5 minutes
 	StaleJobTimeout time.Duration
+
+	// QueueName is the Redis key for the job queue.
+	// Default: "kyu:default"
+	QueueName string
+
+	// MaxOpenConns is the maximum number of open database connections.
+	// Default: 25
+	MaxOpenConns int
+
+	// MaxIdleConns is the maximum number of idle database connections.
+	// Default: 25
+	MaxIdleConns int
+
+	// ConnMaxLifetime is the maximum lifetime of a database connection.
+	// Default: 5 minutes
+	ConnMaxLifetime time.Duration
 }
 
 type EnqueueOptions struct {
@@ -48,14 +66,24 @@ type EnqueueOptions struct {
 	// Jobs with higher priority are processed before lower priority jobs.
 	// Default: 0
 	Priority int
+
 	// MaxRetries is the maximum number of times to retry a failed job.
 	// Default: 0 (no retries)
 	MaxRetries int
+
 	// ScheduledAt is the time at which the job should be executed.
 	// If nil or in the past, the job is enqueued immediately.
 	ScheduledAt *time.Time
-	TimeOut     time.Duration
+
+	// TimeOut is the maximum time the job handler can run before being cancelled.
+	// Default: no timeout
+	TimeOut time.Duration
 }
+
+// Middleware is a function that wraps job execution.
+// It receives the job context, type, payload, and a next function to call the handler.
+// Use Middleware to add logging, metrics, or other cross-cutting concerns.
+type Middleware func(ctx context.Context, jobtype, payload string, next func() error) error
 
 func (c Config) withDefaults() Config {
 	out := c
@@ -74,6 +102,18 @@ func (c Config) withDefaults() Config {
 	if out.Logger == nil {
 		out.Logger = log.Default()
 	}
+	if out.QueueName == "" {
+		out.QueueName = "kyu:default"
+	}
+	if out.MaxOpenConns <= 0 {
+		out.MaxOpenConns = 25
+	}
+	if out.MaxIdleConns <= 0 {
+		out.MaxIdleConns = 25
+	}
+	if out.ConnMaxLifetime <= 0 {
+		out.ConnMaxLifetime = 5 * time.Minute
+	}
 	return out
 }
 
@@ -84,14 +124,15 @@ type Queue struct {
 	registry map[string]func(context.Context, string) error
 	mu       sync.RWMutex // protects registry
 
-	db  *db
-	rdb *rdb
-	met *metrics
+	db          *db
+	rdb         *rdb
+	met         *metrics
+	middlewares []Middleware
 }
 
 // New creates a new Queue with the given configuration.
 // Defaults are applied for any zero-value fields; see Config for details.
-// New does NOT open any connections — that happens inside Start.
+// New does NOT open any connections — that happens inside Connect and Start.
 func New(cfg Config) *Queue {
 	return &Queue{
 		cfg:      cfg.withDefaults(),
@@ -107,8 +148,8 @@ func (q *Queue) Register(jobType string, handler func(ctx context.Context, paylo
 	q.mu.Unlock()
 }
 func (q *Queue) Connect(ctx context.Context) error {
-	// --- Postgres ---
-	pgDB, err := connectDB(q.cfg.DSN)
+	// Connect to PostgreSQL database
+	pgDB, err := q.connectDB(q.cfg.DSN)
 	if err != nil {
 		return fmt.Errorf("kyu: postgres: %w", err)
 	}
@@ -118,21 +159,18 @@ func (q *Queue) Connect(ctx context.Context) error {
 		return fmt.Errorf("kyu: migration: %w", err)
 	}
 
-	// --- Redis ---
+	// Connect to Redis
 	redisClient, err := connectRedis(ctx, q.cfg.RedisAddr)
 	if err != nil {
 		return fmt.Errorf("kyu: redis: %w", err)
 	}
 	q.rdb = redisClient
-	// --- Metrics ---
+
+	// Initialize metrics
 	q.met = newMetrics()
 	return nil
 }
 
-// Start opens database and Redis connections, runs auto-migration, then
-// launches the worker pool, scheduler, stale reaper, and (optionally) the metrics HTTP server
-// as goroutines.
-//
 // Start blocks until the provided context is cancelled, at which point it
 // performs a graceful shutdown and returns any accumulated error. If multiple
 // subsystems fail, only the first error is returned.
@@ -210,6 +248,7 @@ func (q *Queue) runMetricsServer(ctx context.Context, port int) error {
 	}
 }
 
+// Inspect returns a job by its ID.
 func (q *Queue) Inspect(ctx context.Context, id string) (job, error) {
 	var j job
 	if err := q.db.conn.First(&j, "id = ?", id).Error; err != nil {
@@ -217,6 +256,8 @@ func (q *Queue) Inspect(ctx context.Context, id string) (job, error) {
 	}
 	return j, nil
 }
+
+// DeadJobs returns all jobs that have exhausted all retries and are marked as dead.
 func (q *Queue) DeadJobs(ctx context.Context) ([]job, error) {
 	var jobs []job
 	if err := q.db.conn.Where("status = ?", "dead").Find(&jobs).Error; err != nil {
@@ -225,6 +266,8 @@ func (q *Queue) DeadJobs(ctx context.Context) ([]job, error) {
 	}
 	return jobs, nil
 }
+
+// Enqueue adds a new job to the queue.
 func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts EnqueueOptions) (string, error) {
 	j := job{
 		ID:          uuid.New().String(),
@@ -244,7 +287,7 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 	}
 
 	if opts.ScheduledAt == nil || opts.ScheduledAt.Before(time.Now()) {
-		if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+		if err := q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 			Score:  float64(j.Priority),
 			Member: j.ID,
 		}).Err(); err != nil {
@@ -255,6 +298,9 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 	q.met.jobTotal.Inc()
 	return j.ID, nil
 }
+
+// RunOnce runs all registered workers once to process any pending jobs.
+// It blocks until all workers complete. Call Connect() before RunOnce().
 func (q *Queue) RunOnce(ctx context.Context) error {
 	if q.db == nil || q.rdb == nil {
 		return fmt.Errorf("kyu: call Connect() before RunOnce()")
@@ -269,4 +315,25 @@ func (q *Queue) RunOnce(ctx context.Context) error {
 	}
 	wg.Wait()
 	return nil
+}
+
+// CancelJob cancels a pending, scheduled, or failed job by setting its status to cancelled.
+func (q *Queue) CancelJob(ctx context.Context, id string) error {
+	var j job
+	result := q.db.conn.WithContext(ctx).Model(&j).Where("id = ? AND status IN ('pending','scheduled','failed')", id).Update("status", "cancelled")
+	if result.Error != nil {
+		return fmt.Errorf("kyu: cancel job: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("kyu: job %s not found or cannot be cancelled", id)
+
+	}
+	q.rdb.client.ZRem(ctx, q.cfg.QueueName, id)
+	return nil
+}
+
+// Use registers a middleware function to be called for every job execution.
+func (q *Queue) Use(mw Middleware) {
+	q.middlewares = append(q.middlewares, mw)
+
 }

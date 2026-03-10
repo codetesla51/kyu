@@ -10,8 +10,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const pendingQueue = "jobs:pending"
-
 // execute looks up and runs the handler registered for jobType.
 func (q *Queue) execute(ctx context.Context, jobType, payload string, timeout time.Duration) (err error) {
 	defer func() {
@@ -27,10 +25,20 @@ func (q *Queue) execute(ctx context.Context, jobType, payload string, timeout ti
 	q.mu.RLock()
 	handler, ok := q.registry[jobType]
 	q.mu.RUnlock()
+	next := func() error {
+		return handler(ctx, payload)
+	}
 	if !ok {
 		return fmt.Errorf("unknown job type: %s", jobType)
 	}
-	return handler(ctx, payload)
+	for i := len(q.middlewares) - 1; i >= 0; i-- {
+		mw := q.middlewares[i]
+		n := next
+		next = func() error {
+			return mw(ctx, jobType, payload, n)
+		}
+	}
+	return next()
 }
 
 // runWorkerPool spawns numWorkers goroutines and waits for them all to exit
@@ -53,7 +61,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 		if ctx.Err() != nil {
 			return
 		}
-		result, err := q.rdb.client.BZPopMin(ctx, 2*time.Second, pendingQueue).Result()
+		result, err := q.rdb.client.BZPopMin(ctx, 2*time.Second, q.cfg.QueueName).Result()
 		if err != nil {
 			if err.Error() == "redis: nil" {
 				continue // queue empty, loop back
@@ -91,7 +99,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 					"scheduled_at":  schedule_fail_at,
 					"error_message": execErr.Error(),
 				})
-				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+				if err := q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 					Score:  float64(j.Priority),
 					Member: j.ID,
 				}).Err(); err != nil {
@@ -129,14 +137,7 @@ func (q *Queue) runScheduler(ctx context.Context) {
 		case <-ticker.C:
 			var jobs []job
 			err := q.db.conn.
-				Where("status = ? AND scheduled_at <= ?", "scheduled", time.Now()).
-				Find(&jobs).Error
-			if err != nil {
-				q.cfg.Logger.Printf("kyu: scheduler: fetch scheduled jobs: %v", err)
-				continue
-			}
-			err = q.db.conn.
-				Where("status = ? AND scheduled_at <= ?", "failed", time.Now()).
+				Where("status IN (?) AND scheduled_at <= ?", []string{"scheduled", "failed"}, time.Now()).
 				Find(&jobs).Error
 			if err != nil {
 				q.cfg.Logger.Printf("kyu: scheduler: fetch scheduled jobs: %v", err)
@@ -144,7 +145,7 @@ func (q *Queue) runScheduler(ctx context.Context) {
 			}
 
 			for _, j := range jobs {
-				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+				if err := q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 					Score:  float64(j.Priority),
 					Member: j.ID,
 				}).Err(); err != nil {
@@ -190,7 +191,7 @@ func (q *Queue) runOnce(ctx context.Context, workerID int) {
 		if ctx.Err() != nil {
 			return
 		}
-		result, err := q.rdb.client.ZPopMin(ctx, pendingQueue, 1).Result()
+		result, err := q.rdb.client.ZPopMin(ctx, q.cfg.QueueName, 1).Result()
 
 		if err != nil {
 
@@ -211,7 +212,7 @@ func (q *Queue) runOnce(ctx context.Context, workerID int) {
 			continue
 		}
 		if j.ScheduledAt != nil && j.ScheduledAt.After(time.Now()) {
-			q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+			q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 				Score:  float64(j.Priority),
 				Member: j.ID,
 			})
@@ -236,7 +237,7 @@ func (q *Queue) runOnce(ctx context.Context, workerID int) {
 					"scheduled_at":  schedule_fail_at,
 					"error_message": execErr.Error(),
 				})
-				if err := q.rdb.client.ZAdd(ctx, pendingQueue, redis.Z{
+				if err := q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 					Score:  float64(j.Priority),
 					Member: j.ID,
 				}).Err(); err != nil {

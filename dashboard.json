@@ -57,7 +57,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_jobs_total",
+          "expr": "sum(kyu_jobs_total)",
           "refId": "A"
         }
       ],
@@ -112,7 +112,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_jobs_processed_total{status=\"completed\"}",
+          "expr": "sum(kyu_jobs_processed_total{status=\"completed\"})",
           "refId": "A"
         }
       ],
@@ -171,7 +171,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_job_failures_total",
+          "expr": "sum(kyu_job_failures_total)",
           "refId": "A"
         }
       ],
@@ -230,7 +230,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_jobs_dead_total",
+          "expr": "sum(kyu_jobs_dead_total)",
           "refId": "A"
         }
       ],
@@ -315,7 +315,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_queue_depth",
+          "expr": "sum(kyu_queue_depth)",
           "refId": "A"
         }
       ],
@@ -431,7 +431,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_jobs_processed_total",
+          "expr": "sum by (status) (kyu_jobs_processed_total)",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -664,7 +664,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "go_gccycles_automatic_gc_cycles_total",
+          "expr": "go_gc_duration_seconds_count",
           "refId": "A"
         }
       ],
@@ -921,8 +921,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_jobs_processed_total by (job_type, status)",
-          "legendFormat": "{{job_type}} - {{status}}",
+          "expr": "sum by (status) (kyu_jobs_processed_total)",
+          "legendFormat": "{{status}}",
           "refId": "A"
         }
       ],
@@ -1007,12 +1007,184 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kyu_job_failures_total by (job_type)",
+          "expr": "sum by (job_type) (kyu_job_failures_total)",
           "legendFormat": "{{job_type}}",
           "refId": "A"
         }
       ],
       "title": "Failures by Job Type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "go_memstats_heap_alloc_bytes",
+          "refId": "A"
+        }
+      ],
+      "title": "Heap Alloc Bytes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "go_memstats_sys_bytes",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Memory Sys",
       "type": "timeseries"
     }
   ],

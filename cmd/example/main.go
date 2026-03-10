@@ -64,6 +64,15 @@ func main() {
 		log.Printf("notify_admin: processing payload=%q", payload)
 		return nil
 	})
+	q.Use(func(ctx context.Context, jobtype, payload string, next func() error) error {
+		log.Printf("logging middleware")
+		err := next()
+		if err != nil {
+			log.Printf("Job failed : %s", jobtype)
+			return err
+		}
+		return err
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -137,6 +146,22 @@ func main() {
 			ScheduledAt: &scheduledAt,
 			TimeOut:     1 * time.Second,
 		})
+
+		// Cancel job test - use generate_report which takes 3 seconds
+		cancelJobID, _ := q.Enqueue(ctx, "generate_report", `{"report_id": 999}`, kyu.EnqueueOptions{
+			MaxRetries: 2,
+			Priority:   0,
+		})
+		log.Printf("Enqueued job to cancel: %s", cancelJobID)
+
+		time.Sleep(500 * time.Millisecond) // wait a bit before cancelling
+
+		err := q.CancelJob(ctx, cancelJobID)
+		if err != nil {
+			log.Printf("CancelJob error: %v", err)
+		} else {
+			log.Printf("Successfully cancelled job: %s", cancelJobID)
+		}
 
 		time.Sleep(15 * time.Second)
 

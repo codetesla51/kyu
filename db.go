@@ -13,11 +13,25 @@ type db struct {
 }
 
 // connectDB opens a GORM/Postgres connection using the provided DSN.
-func connectDB(dsn string) (*db, error) {
+func (q *Queue) connectDB(dsn string) (*db, error) {
 	conn, err := gorm.Open(gormpostgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
+	sqlDB, err := conn.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get sql db: %w", err)
+	}
+	if q.cfg.MaxOpenConns > 0 {
+		sqlDB.SetMaxOpenConns(q.cfg.MaxOpenConns)
+	}
+	if q.cfg.MaxIdleConns > 0 {
+		sqlDB.SetMaxIdleConns(q.cfg.MaxIdleConns)
+	}
+	if q.cfg.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(q.cfg.ConnMaxLifetime)
+	}
+
 	return &db{conn: conn}, nil
 }
 
