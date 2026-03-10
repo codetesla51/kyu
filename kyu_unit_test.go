@@ -263,7 +263,7 @@ func TestIntegration_EnqueueAndProcess(t *testing.T) {
 	defer cancel()
 	logger := log.New(testWriter{t}, "", 0)
 	q := New(Config{
-		DSN:         "postgres://postgres:2005code@localhost:5432/jobscheduler?sslmode=disable",
+		DSN:         "postgres://localhost:5432/kyu?sslmode=disable",
 		RedisAddr:   "localhost:6380",
 		Workers:     1,
 		MetricsPort: 0,
@@ -304,7 +304,7 @@ func TestIntegration_MiddlewareCalled(t *testing.T) {
 	defer cancel()
 	logger := log.New(testWriter{t}, "", 0)
 	q := New(Config{
-		DSN:         "postgres://postgres:2005code@localhost:5432/jobscheduler?sslmode=disable",
+		DSN:         "postgres://localhost:5432/kyu?sslmode=disable",
 		RedisAddr:   "localhost:6380",
 		Workers:     1,
 		MetricsPort: 0,
