@@ -3,9 +3,19 @@ package kyu
 import (
 	"context"
 	"errors"
+	"log"
 	"testing"
 	"time"
 )
+
+type testWriter struct {
+	t *testing.T
+}
+
+func (tw testWriter) Write(p []byte) (int, error) {
+	tw.t.Log(string(p))
+	return len(p), nil
+}
 
 // ---------------------------------------------------------------------------
 // Config.withDefaults
@@ -238,5 +248,94 @@ func TestRunOnce_RequiresConnect(t *testing.T) {
 	err := q.RunOnce(context.Background())
 	if err == nil {
 		t.Error("expected error when not connected")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Full integration tests (require PostgreSQL and Redis running)
+// ---------------------------------------------------------------------------
+
+func TestIntegration_EnqueueAndProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	logger := log.New(testWriter{t}, "", 0)
+	q := New(Config{
+		DSN:         "postgres://postgres:2005code@localhost:5432/jobscheduler?sslmode=disable",
+		RedisAddr:   "localhost:6380",
+		Workers:     1,
+		MetricsPort: 0,
+		Logger:      logger,
+		QueueName:   "kyu:test_enqueue",
+	})
+	q.Register("test_job", func(ctx context.Context, payload string) error {
+		return nil
+	})
+	if err := q.Connect(ctx); err != nil {
+		t.Skipf("skipping: cannot connect: %v", err)
+	}
+	// flush stale state
+	q.rdb.client.Del(ctx, q.cfg.QueueName)
+	q.db.conn.Exec("DELETE FROM jobs")
+
+	var processed bool
+	q.Register("test_job", func(ctx context.Context, payload string) error {
+		processed = true
+		return nil
+	})
+	_, err := q.Enqueue(ctx, "test_job", "test-payload", EnqueueOptions{MaxRetries: 0})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	go q.Start(ctx)
+	time.Sleep(5 * time.Second)
+	if !processed {
+		t.Error("job was not processed")
+	}
+}
+
+func TestIntegration_MiddlewareCalled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	logger := log.New(testWriter{t}, "", 0)
+	q := New(Config{
+		DSN:         "postgres://postgres:2005code@localhost:5432/jobscheduler?sslmode=disable",
+		RedisAddr:   "localhost:6380",
+		Workers:     1,
+		MetricsPort: 0,
+		Logger:      logger,
+		QueueName:   "kyu:test_middleware",
+	})
+	var mwCalled, handlerCalled bool
+	q.Use(func(ctx context.Context, jobtype, payload string, next func() error) error {
+		mwCalled = true
+		return next()
+	})
+	q.Register("mw_job", func(ctx context.Context, payload string) error {
+		handlerCalled = true
+		return nil
+	})
+	if err := q.Connect(ctx); err != nil {
+		t.Skipf("skipping: cannot connect: %v", err)
+	}
+	// flush stale state
+	q.rdb.client.Del(ctx, q.cfg.QueueName)
+	q.db.conn.Exec("DELETE FROM jobs")
+
+	if _, err := q.Enqueue(ctx, "mw_job", "payload", EnqueueOptions{MaxRetries: 0}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	go q.Start(ctx)
+	time.Sleep(5 * time.Second)
+	if !mwCalled {
+		t.Error("middleware was not called")
+	}
+	if !handlerCalled {
+		t.Error("handler was not called")
 	}
 }

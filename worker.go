@@ -25,11 +25,11 @@ func (q *Queue) execute(ctx context.Context, jobType, payload string, timeout ti
 	q.mu.RLock()
 	handler, ok := q.registry[jobType]
 	q.mu.RUnlock()
-	next := func() error {
-		return handler(ctx, payload)
-	}
 	if !ok {
 		return fmt.Errorf("unknown job type: %s", jobType)
+	}
+	next := func() error {
+		return handler(ctx, payload)
 	}
 	for i := len(q.middlewares) - 1; i >= 0; i-- {
 		mw := q.middlewares[i]

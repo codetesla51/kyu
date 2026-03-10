@@ -306,7 +306,7 @@ func (q *Queue) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("kyu: call Connect() before RunOnce()")
 	}
 	var wg sync.WaitGroup
-	for w := 1; w < q.cfg.Workers; w++ {
+	for w := 1; w <= q.cfg.Workers; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
