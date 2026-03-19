@@ -94,12 +94,16 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 			if j.RetryCount < j.MaxRetries {
 				delay := time.Duration(math.Pow(2, float64(j.RetryCount))) * time.Second
 				schedule_fail_at := time.Now().Add(delay)
-				q.db.conn.Model(&j).Updates(map[string]any{
+				res := q.db.conn.Where("id = ? AND locked_by = ?", j.ID, fmt.Sprintf("worker-%d", workerID)).Model(&j).Updates(map[string]any{
 					"status":        "failed",
 					"retry_count":   j.RetryCount + 1,
 					"scheduled_at":  schedule_fail_at,
 					"error_message": execErr.Error(),
 				})
+				if res.RowsAffected == 0 {
+					q.cfg.Logger.Printf("kyu: worker %d: job %s was locked by another worker, skipping retry update", workerID, j.ID)
+					continue
+				}
 				if err := q.rdb.client.ZAdd(ctx, q.cfg.QueueName, redis.Z{
 					Score:  float64(j.Priority),
 					Member: j.ID,
@@ -108,18 +112,26 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 				}
 				q.met.jobFailures.WithLabelValues(j.JobType).Inc()
 			} else {
-				q.db.conn.Model(&j).Updates(map[string]any{
+				res := q.db.conn.Where("id = ? AND locked_by = ?", j.ID, fmt.Sprintf("worker-%d", workerID)).Model(&j).Updates(map[string]any{
 					"status":        "dead",
 					"error_message": fmt.Sprintf("job failed after %d retries: %v", j.RetryCount, execErr),
 				})
+				if res.RowsAffected == 0 {
+					q.cfg.Logger.Printf("kyu: worker %d: job %s was locked by another worker, skipping dead update", workerID, j.ID)
+					continue
+				}
 				q.met.jobsDeadTotal.Inc()
 			}
 		} else {
 			completed := time.Now()
-			q.db.conn.Model(&j).Updates(map[string]any{
+			res := q.db.conn.Where("id = ? AND locked_by = ?", j.ID, fmt.Sprintf("worker-%d", workerID)).Updates(map[string]any{
 				"status":       "completed",
 				"completed_at": completed,
 			})
+			if res.RowsAffected == 0 {
+				q.cfg.Logger.Printf("kyu: worker %d: job %s was locked by another worker, skipping completion update", workerID, j.ID)
+				continue
+			}
 			q.met.jobsProcessed.WithLabelValues("completed").Inc()
 		}
 	}
