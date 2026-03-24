@@ -26,6 +26,10 @@ type Config struct {
 	// Default: "localhost:6379"
 	RedisAddr string
 
+	// RedisPassword is the password for the Redis server.
+	// Default: ""
+	RedisPassword string
+
 	// Workers is the number of concurrent worker goroutines.
 	// Default: 5
 	Workers int
@@ -92,6 +96,9 @@ func (c Config) withDefaults() Config {
 	}
 	if out.RedisAddr == "" {
 		out.RedisAddr = "localhost:6379"
+	}
+	if out.RedisPassword == "" {
+		out.RedisPassword = ""
 	}
 	if out.Workers <= 0 {
 		out.Workers = 5
@@ -160,7 +167,7 @@ func (q *Queue) Connect(ctx context.Context) error {
 	}
 
 	// Connect to Redis
-	redisClient, err := connectRedis(ctx, q.cfg.RedisAddr)
+	redisClient, err := connectRedis(ctx, q.cfg.RedisAddr, q.cfg.RedisPassword)
 	if err != nil {
 		return fmt.Errorf("kyu: redis: %w", err)
 	}

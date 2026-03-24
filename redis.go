@@ -13,12 +13,11 @@ type rdb struct {
 	client *redis.Client
 }
 
-// connectRedis dials Redis at addr, pings it, and returns the wrapper.
-// The ping uses a short background context so it is not affected by a
-// caller-supplied ctx that may already be near cancellation.
-func connectRedis(ctx context.Context, addr string) (*rdb, error) {
+// connectRedis dials Redis at addr with an optional password, pings it, and returns the wrapper.
+func connectRedis(ctx context.Context, addr string, password string) (*rdb, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr: addr,
+		Addr:     addr,
+		Password: password,
 	})
 	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -16,9 +16,10 @@ func main() {
 	q := kyu.New(kyu.Config{
 		DSN:             envOr("DATABASE_URL", "postgres://localhost:5432/kyu?sslmode=disable"),
 		RedisAddr:       envOr("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:   envOr("REDIS_PASSWORD", ""),
 		Workers:         5,
 		MetricsPort:     9090,
-		StaleJobTimeout: 1,
+		StaleJobTimeout: 2 * time.Second,
 		Logger:          log.Default(),
 	})
 
@@ -35,6 +36,11 @@ func main() {
 	q.Register("process_payment", func(ctx context.Context, payload string) error {
 		log.Printf("process_payment: processing payload=%q", payload)
 		time.Sleep(1 * time.Second)
+		return nil
+	})
+	q.Register("slow_job", func(ctx context.Context, payload string) error {
+		log.Printf("process_slow_job: processing payload=%q", payload)
+		time.Sleep(10 * time.Second)
 		return nil
 	})
 
