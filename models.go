@@ -23,4 +23,5 @@ type job struct {
 	ErrorMessage string         `json:"error_message"`
 	LockedAt     *time.Time     `json:"locked_at"    gorm:"index"`
 	LockedBy     string         `json:"locked_by"`
+	TimeOut      *time.Duration `json:"timeout"`
 }
