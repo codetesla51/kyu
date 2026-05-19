@@ -80,8 +80,8 @@ type EnqueueOptions struct {
 	ScheduledAt *time.Time
 
 	// TimeOut is the maximum time the job handler can run before being cancelled.
-	// Default: no timeout
-	TimeOut time.Duration
+	// Default: 30 seconds
+	TimeOut *time.Duration
 }
 
 // Middleware is a function that wraps job execution.
@@ -284,9 +284,15 @@ func (q *Queue) Enqueue(ctx context.Context, jobType, payload string, opts Enque
 		MaxRetries:  opts.MaxRetries,
 		Priority:    opts.Priority,
 		Status:      "pending",
+		TimeOut:     opts.TimeOut,
 	}
-	if opts.ScheduledAt != nil {
+	if j.ScheduledAt != nil {
 		j.Status = "scheduled"
+	}
+
+	if j.TimeOut == nil {
+		defaultTimeout := 30 * time.Second
+		j.TimeOut = &defaultTimeout
 	}
 
 	if err := q.db.conn.Create(&j).Error; err != nil {

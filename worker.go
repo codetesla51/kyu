@@ -88,7 +88,7 @@ func (q *Queue) runWorker(ctx context.Context, workerID int) {
 			LockedBy: fmt.Sprintf("worker-%d", workerID),
 		})
 
-		execErr := q.execute(ctx, j.JobType, j.Payload, 30*time.Second)
+		execErr := q.execute(ctx, j.JobType, j.Payload, *j.TimeOut)
 
 		if execErr != nil {
 			if j.RetryCount < j.MaxRetries {
